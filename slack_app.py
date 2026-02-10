@@ -1,6 +1,7 @@
 """Flask app for Slack slash command: trigger weekly updates from Slack."""
 import hmac
 import hashlib
+import json
 import logging
 import os
 import threading
@@ -9,6 +10,18 @@ from urllib.parse import parse_qs
 
 import requests
 from flask import Flask, request, jsonify
+
+DEBUG_LOG_PATH = os.path.join(os.path.dirname(__file__), ".cursor", "debug.log")
+
+def _debug_log(message: str, data: dict, hypothesis_id: str = ""):
+    try:
+        payload = {"message": message, "data": data, "timestamp": int(time.time() * 1000)}
+        if hypothesis_id:
+            payload["hypothesisId"] = hypothesis_id
+        with open(DEBUG_LOG_PATH, "a") as f:
+            f.write(json.dumps(payload) + "\n")
+    except Exception:
+        pass
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,15 +44,28 @@ def _verify_slack_signature(
         logger.warning("SLACK_SIGNING_SECRET not set; skipping verification")
         return True
     if not signature_header or not signature_header.startswith("v0="):
+        logger.info(
+            "Signature verification failed: missing or invalid X-Slack-Signature (has_header=%s, starts_v0=%s)",
+            bool(signature_header),
+            signature_header.startswith("v0=") if signature_header else False,
+        )
         return False
     if not timestamp:
+        logger.info("Signature verification failed: missing timestamp in body")
         return False
     body_str = body_bytes.decode("utf-8")
     sig_basestring = f"v0:{timestamp}:{body_str}"
     computed = "v0=" + hmac.new(
         secret.encode(), sig_basestring.encode(), hashlib.sha256
     ).hexdigest()
-    return hmac.compare_digest(computed, signature_header)
+    ok = hmac.compare_digest(computed, signature_header)
+    if not ok:
+        logger.info(
+            "Signature verification failed: computed != received (body_len=%d, timestamp=%s)",
+            len(body_bytes),
+            timestamp,
+        )
+    return ok
 
 
 def _is_timestamp_fresh(timestamp_str: str) -> bool:
@@ -84,49 +110,91 @@ def _run_job_and_notify(job_type: str, response_url: str) -> None:
 @app.route("/slack/weekly-update", methods=["POST"])
 def slack_weekly_update():
     """Handle Slack slash command: run weekly update job and respond quickly."""
-    # Need raw body for signature verification (Slack sends form-urlencoded)
-    body_bytes = request.get_data()
-    if not body_bytes:
-        return jsonify({"text": "Empty body"}), 400
+    # #region agent log
+    _debug_log("slack_weekly_update entry", {}, "A")
+    # #endregion
+    try:
+        # Need raw body for signature verification (Slack sends form-urlencoded)
+        body_bytes = request.get_data()
+        if not body_bytes:
+            logger.info("Slack request rejected: empty body")
+            _debug_log("empty body return 400", {}, "B")
+            return jsonify({"text": "Empty body"}), 400
 
-    sig_header = request.headers.get("X-Slack-Signature")
-    data = parse_qs(body_bytes.decode("utf-8"))
-    timestamp = (data.get("timestamp") or [None])[0]
-    if not _verify_slack_signature(body_bytes, timestamp or "", sig_header or ""):
-        return jsonify({"text": "Invalid signature"}), 401
-    if not timestamp or not _is_timestamp_fresh(timestamp):
-        return jsonify({"text": "Request too old"}), 401
+        sig_header = request.headers.get("X-Slack-Signature")
+        data = parse_qs(body_bytes.decode("utf-8"))
+        timestamp = (data.get("timestamp") or [None])[0]
+        logger.info(
+            "Slack request received: body_len=%d, has_sig=%s, has_timestamp=%s, timestamp=%s",
+            len(body_bytes),
+            bool(sig_header),
+            bool(timestamp),
+            timestamp if timestamp else "(none)",
+        )
+        sig_ok = _verify_slack_signature(body_bytes, timestamp or "", sig_header or "")
+        # #region agent log
+        _debug_log("after signature verify", {"sig_ok": sig_ok, "has_timestamp": bool(timestamp)}, "B")
+        # #endregion
+        if not sig_ok:
+            logger.info("Slack request rejected: invalid signature")
+            return jsonify({"text": "Invalid signature"}), 401
+        fresh = timestamp and _is_timestamp_fresh(timestamp)
+        if not fresh:
+            logger.info(
+                "Slack request rejected: timestamp too old (timestamp=%s, now=%s)",
+                timestamp,
+                int(time.time()),
+            )
+        # #region agent log
+        _debug_log("after timestamp check", {"fresh": fresh}, "B")
+        # #endregion
+        if not fresh:
+            return jsonify({"text": "Request too old"}), 401
 
-    text = (data.get("text") or [""])[0]
-    response_url = (data.get("response_url") or [""])[0]
-    job_type = _parse_job_type(text)
+        logger.info("Slack request accepted: signature valid, timestamp fresh")
+        text = (data.get("text") or [""])[0]
+        response_url = (data.get("response_url") or [""])[0]
+        job_type = _parse_job_type(text)
 
-    # Respond within 3 seconds
-    reply = {
-        "response_type": "ephemeral",
-        "text": f"Running {job_type} update… I'll post here when it's done.",
-    }
-    if not response_url:
-        reply["text"] = f"Running {job_type} update… (no response_url; check logs for completion)"
+        # Respond within 3 seconds
+        reply = {
+            "response_type": "ephemeral",
+            "text": f"Running {job_type} update… I'll post here when it's done.",
+        }
+        if not response_url:
+            reply["text"] = f"Running {job_type} update… (no response_url; check logs for completion)"
 
-    # Run job in background and optionally post to response_url when done
-    def run():
-        if response_url:
-            _run_job_and_notify(job_type, response_url)
-        else:
-            try:
-                from scheduler import WeeklyUpdateScheduler
+        # Run job in background and optionally post to response_url when done
+        def run():
+            if response_url:
+                _run_job_and_notify(job_type, response_url)
+            else:
+                try:
+                    from scheduler import WeeklyUpdateScheduler
 
-                WeeklyUpdateScheduler().run_now(job_type)
-            except Exception as e:
-                logger.exception("Slack-triggered job failed: %s", e)
+                    WeeklyUpdateScheduler().run_now(job_type)
+                except Exception as e:
+                    logger.exception("Slack-triggered job failed: %s", e)
 
-    threading.Thread(target=run, daemon=True).start()
-    return jsonify(reply), 200
+        threading.Thread(target=run, daemon=True).start()
+        # #region agent log
+        _debug_log("returning 200", {"job_type": job_type, "response_type": reply.get("response_type")}, "C")
+        # #endregion
+        return jsonify(reply), 200
+    except Exception as e:
+        # #region agent log
+        _debug_log("handler exception", {"error": str(e), "type": type(e).__name__}, "D")
+        # #endregion
+        logger.exception("Slack slash command handler error")
+        return jsonify({"text": f"Error: {str(e)}"}), 500
 
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
+    logger.info(
+        "SLACK_SIGNING_SECRET present: %s (set in env)",
+        bool(os.getenv("SLACK_SIGNING_SECRET")),
+    )
     try:
         import waitress
 
