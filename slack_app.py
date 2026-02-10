@@ -114,8 +114,9 @@ def slack_weekly_update():
     _debug_log("slack_weekly_update entry", {}, "A")
     # #endregion
     try:
-        # Need raw body for signature verification (Slack sends form-urlencoded)
-        body_bytes = request.get_data()
+        # Need raw body for signature verification (Slack sends form-urlencoded).
+        # parse_form_data=False ensures we get the exact bytes Slack sent (no re-encoding).
+        body_bytes = request.get_data(parse_form_data=False)
         if not body_bytes:
             logger.info("Slack request rejected: empty body")
             _debug_log("empty body return 400", {}, "B")
@@ -124,9 +125,11 @@ def slack_weekly_update():
         sig_header = request.headers.get("X-Slack-Signature")
         data = parse_qs(body_bytes.decode("utf-8"))
         timestamp = (data.get("timestamp") or [None])[0]
+        body_hash = hashlib.sha256(body_bytes).hexdigest()[:12]
         logger.info(
-            "Slack request received: body_len=%d, has_sig=%s, has_timestamp=%s, timestamp=%s",
+            "Slack request received: body_len=%d, body_sha256_prefix=%s, has_sig=%s, has_timestamp=%s, timestamp=%s",
             len(body_bytes),
+            body_hash,
             bool(sig_header),
             bool(timestamp),
             timestamp if timestamp else "(none)",
@@ -191,9 +194,11 @@ def slack_weekly_update():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
+    secret = os.getenv("SLACK_SIGNING_SECRET") or ""
     logger.info(
-        "SLACK_SIGNING_SECRET present: %s (set in env)",
-        bool(os.getenv("SLACK_SIGNING_SECRET")),
+        "SLACK_SIGNING_SECRET present: %s, first_6_chars: %s",
+        bool(secret),
+        secret[:6] if secret else "(none)",
     )
     try:
         import waitress
