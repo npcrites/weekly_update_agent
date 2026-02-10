@@ -33,6 +33,8 @@ This will:
 - Update current weekly file every day at 8pm
 - On Fridays at 8:30pm, compile the week into one cohesive document (no dupes)
 
+**Important:** Keep the terminal open (or use `tmux`/`screen`) so the process keeps running. Closing the terminal stops the scheduler and no jobs will run until you start `python main.py` again.
+
 ### Manual Execution
 ```bash
 # Run Monday job (create new file)

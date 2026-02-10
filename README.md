@@ -34,8 +34,12 @@ export TIMEZONE="America/New_York"
 
 ### Run as a service:
 ```bash
+python main.py
+# or
 python scheduler.py
 ```
+
+**Important:** The scheduler runs as a long-running process. You must **keep that terminal window open** (or run it inside `tmux`/`screen`) for the Monday, daily, and Friday jobs to run on schedule. If you close the terminal or stop the process, no scheduled jobs will run until you start it again.
 
 ### Run jobs manually (for testing):
 ```python
