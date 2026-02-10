@@ -124,7 +124,11 @@ def slack_weekly_update():
 
         sig_header = request.headers.get("X-Slack-Signature")
         data = parse_qs(body_bytes.decode("utf-8"))
-        timestamp = (data.get("timestamp") or [None])[0]
+        # Slack sends timestamp in X-Slack-Request-Timestamp header (not in body) for signature verification
+        timestamp = (request.headers.get("X-Slack-Request-Timestamp") or "").strip()
+        if not timestamp:
+            timestamp = (data.get("timestamp") or [None])[0]
+        timestamp = (timestamp or "").strip() if timestamp else ""
         body_hash = hashlib.sha256(body_bytes).hexdigest()[:12]
         logger.info(
             "Slack request received: body_len=%d, body_sha256_prefix=%s, has_sig=%s, has_timestamp=%s, timestamp=%s",
@@ -134,7 +138,7 @@ def slack_weekly_update():
             bool(timestamp),
             timestamp if timestamp else "(none)",
         )
-        sig_ok = _verify_slack_signature(body_bytes, timestamp or "", sig_header or "")
+        sig_ok = _verify_slack_signature(body_bytes, timestamp, sig_header or "")
         # #region agent log
         _debug_log("after signature verify", {"sig_ok": sig_ok, "has_timestamp": bool(timestamp)}, "B")
         # #endregion
