@@ -31,6 +31,12 @@ class Config:
     # Content settings
     MAX_HIGHLIGHTS = 5
     PAST_DOCUMENTS_TO_ANALYZE = 5
+
+    # Slack (for slash command: /weekly-update)
+    # SLACK_SIGNING_SECRET: from Slack app → Basic Information → Signing Secret (required for verification)
+    # SLACK_BOT_TOKEN: optional, only if posting follow-up via chat.postMessage instead of response_url
+    SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "")
+    SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
     
     @staticmethod
     def get_quarter_folder_name(date: datetime) -> str:

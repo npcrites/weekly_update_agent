@@ -1,0 +1,13 @@
+# Render Blueprint: deploy the Slack slash-command app so your team can use /weekly-update
+# Docs: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: weekly-updates-slack
+    runtime: python
+    plan: free
+
+    buildCommand: pip install -r requirements.txt
+    startCommand: python slack_app.py
+
+    # Render sets PORT automatically; slack_app.py reads os.getenv("PORT")
+    # Add SLACK_SIGNING_SECRET (and any Confluence/Jira/etc. keys) in Render Dashboard → Environment
