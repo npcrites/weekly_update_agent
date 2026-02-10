@@ -134,6 +134,8 @@ class ContentGenerator:
         
         # Try Granola first (more reliable for meeting data)
         try:
+            if self.granola is None:
+                raise ModuleNotFoundError("Granola not available")
             customer_calls = self.granola.get_customer_calls()
             for call in customer_calls:
                 formatted = self.granola.format_customer_call(call)
